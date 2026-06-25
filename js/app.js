@@ -1378,8 +1378,16 @@ function escapeAttr(str) {
   return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// ── Initial Render ─────────────────────────────────────────────────────────
+render();
+
+const _authTimeout = setTimeout(() => {
+  if (state.route === "loading") navigate("signin");
+}, 5000);
+
 // ── Auth State Listener ─────────────────────────────────────────────────────
 auth.onAuthStateChanged(async user => {
+  clearTimeout(_authTimeout);
   if (user) {
     state.user = user;
     try {
