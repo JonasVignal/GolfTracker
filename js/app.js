@@ -3,10 +3,10 @@
    ═══════════════════════════════════════════════════════════════════════════ */
 
 // ── Firebase Config ─────────────────────────────────────────────────────────
-// Replace with your Firebase project credentials
 const firebaseConfig = {
   apiKey: "AIzaSyDfbuEgkbUfAVMkjTOtdwGS07HfcgI5lR8",
   authDomain: "golftracker-2026.firebaseapp.com",
+  databaseURL: "https://golftracker-2026-default-rtdb.firebaseio.com",
   projectId: "golftracker-2026",
   storageBucket: "golftracker-2026.firebasestorage.app",
   messagingSenderId: "908737680772",
@@ -16,7 +16,7 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
-const db = firebase.firestore();
+const db = firebase.database();
 
 // ── Seed Courses ────────────────────────────────────────────────────────────
 const SEED_COURSES = {
@@ -42,40 +42,26 @@ const SEED_COURSES = {
 };
 
 async function seedCoursesForUser(uid) {
-  const userCourses = await db.collection("courses")
-    .where("createdBy", "==", uid)
-    .get();
+  const snap = await db.ref("courses/" + uid).once("value");
+  const existing = snap.val() || {};
 
   for (const [key, data] of Object.entries(SEED_COURSES)) {
-    const existingDoc = userCourses.docs.find(d => d.data().seedKey === key);
+    const existingId = Object.keys(existing).find(id => existing[id].seedKey === key);
 
-    if (existingDoc) {
-      const current = existingDoc.data();
+    if (existingId) {
+      const current = existing[existingId];
       const updates = {};
       if (data.imagePattern && !current.imagePattern) updates.imagePattern = data.imagePattern;
       if (data.tees && !current.tees) updates.tees = data.tees;
       if (Object.keys(updates).length > 0) {
-        await db.collection("courses").doc(existingDoc.id).update(updates);
+        await db.ref("courses/" + uid + "/" + existingId).update(updates);
       }
       continue;
     }
 
-    const courseRef = await db.collection("courses").add({
-      name: data.name,
-      location: data.location,
-      holeCount: data.holeCount,
-      totalPar: data.par,
-      tees: data.tees,
-      imagePattern: data.imagePattern || null,
-      seedKey: key,
-      createdBy: uid,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-
-    const batch = db.batch();
+    const holes = [];
     for (let i = 0; i < data.holeCount; i++) {
-      const holeRef = courseRef.collection("holes").doc();
-      batch.set(holeRef, {
+      holes.push({
         number: i + 1,
         par: data.pars[i],
         strokeIndex: data.si[i],
@@ -88,7 +74,18 @@ async function seedCoursesForUser(uid) {
         }
       });
     }
-    await batch.commit();
+
+    await db.ref("courses/" + uid).push({
+      name: data.name,
+      location: data.location,
+      holeCount: data.holeCount,
+      totalPar: data.par,
+      tees: data.tees,
+      imagePattern: data.imagePattern || null,
+      seedKey: key,
+      createdAt: firebase.database.ServerValue.TIMESTAMP,
+      holes
+    });
   }
 }
 
@@ -336,22 +333,26 @@ function bindDashboard() {
 
 async function loadRecentRounds() {
   try {
-    const snap = await db.collection("rounds")
-      .where("userId", "==", state.user.uid)
-      .orderBy("startedAt", "desc")
-      .limit(10)
-      .get();
+    const snap = await db.ref("rounds/" + state.user.uid)
+      .orderByChild("startedAt")
+      .limitToLast(10)
+      .once("value");
+
+    const rounds = [];
+    snap.forEach(child => {
+      rounds.push({ id: child.key, ...child.val() });
+    });
+    rounds.reverse();
 
     const countEl = document.getElementById("rounds-count");
-    if (countEl) countEl.textContent = snap.size;
+    if (countEl) countEl.textContent = rounds.length;
 
     const container = document.getElementById("recent-rounds");
-    if (!container || snap.empty) return;
+    if (!container || rounds.length === 0) return;
 
     let html = "";
-    for (const doc of snap.docs) {
-      const r = doc.data();
-      const date = r.startedAt?.toDate?.() ? r.startedAt.toDate().toLocaleDateString() : "";
+    for (const r of rounds) {
+      const date = r.startedAt ? new Date(r.startedAt).toLocaleDateString() : "";
       const courseName = r.courseName || "Unknown Course";
       const totalPts = r.totalPoints ?? "—";
       const totalGross = r.totalGross ?? "—";
@@ -359,7 +360,7 @@ async function loadRecentRounds() {
       const statusCls = r.status === "completed" ? "badge-success" : "badge-warning";
 
       html += `
-        <div class="card round-card" style="margin-bottom:12px;cursor:pointer" data-round-id="${doc.id}">
+        <div class="card round-card" style="margin-bottom:12px;cursor:pointer" data-round-id="${r.id}">
           <div style="display:flex;justify-content:space-between;align-items:start">
             <div>
               <div style="font-weight:600;font-size:16px">${escapeHtml(courseName)}</div>
@@ -391,35 +392,40 @@ async function loadRecentRounds() {
 
 async function resumeRound(roundId) {
   try {
-    const roundDoc = await db.collection("rounds").doc(roundId).get();
-    if (!roundDoc.exists) return;
-    const round = { id: roundDoc.id, ...roundDoc.data() };
+    const uid = state.user.uid;
+    const roundSnap = await db.ref("rounds/" + uid + "/" + roundId).once("value");
+    if (!roundSnap.exists()) return;
+    const round = { id: roundId, ...roundSnap.val() };
 
     if (round.status === "completed") {
+      const courseSnap = await db.ref("courses/" + uid + "/" + round.courseId).once("value");
+      if (courseSnap.exists()) {
+        const courseData = courseSnap.val();
+        state.currentCourse = { id: round.courseId, ...courseData, holes: courseData.holes || [] };
+      }
       state.currentRound = round;
       navigate("summary");
       return;
     }
 
-    const courseDoc = await db.collection("courses").doc(round.courseId).get();
-    if (!courseDoc.exists) return;
-    const course = { id: courseDoc.id, ...courseDoc.data() };
+    const courseSnap = await db.ref("courses/" + uid + "/" + round.courseId).once("value");
+    if (!courseSnap.exists()) return;
+    const courseData = courseSnap.val();
+    const course = { id: round.courseId, ...courseData, holes: courseData.holes || [] };
 
-    const holesSnap = await db.collection("courses").doc(course.id)
-      .collection("holes").orderBy("number").get();
-    course.holes = holesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-    const shotsSnap = await db.collection("shots")
-      .where("roundId", "==", roundId)
-      .where("userId", "==", state.user.uid)
-      .orderBy("holeNumber")
-      .orderBy("strokeNumber")
-      .get();
+    const shotsSnap = await db.ref("shots/" + roundId).once("value");
+    const shots = [];
+    if (shotsSnap.exists()) {
+      shotsSnap.forEach(child => {
+        shots.push({ id: child.key, ...child.val() });
+      });
+    }
+    shots.sort((a, b) => (a.holeNumber - b.holeNumber) || (a.strokeNumber - b.strokeNumber));
 
     state.currentCourse = course;
     state.currentRound = round;
     state.selectedTee = round.tee || null;
-    state.shots = shotsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    state.shots = shots;
     state.currentHole = round.currentHole || 1;
     navigate("active-hole");
   } catch (e) {
@@ -481,10 +487,11 @@ function bindProfile() {
     const name = document.getElementById("profile-name").value.trim();
     const hcp = parseFloat(document.getElementById("profile-hcp").value) || 0;
     try {
-      await db.collection("users").doc(state.user.uid).set(
-        { displayName: name, handicap: hcp, updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
-        { merge: true }
-      );
+      await db.ref("users/" + state.user.uid).update({
+        displayName: name,
+        handicap: hcp,
+        updatedAt: firebase.database.ServerValue.TIMESTAMP
+      });
       state.profile = { ...state.profile, displayName: name, handicap: hcp };
       navigate("dashboard");
     } catch (e) {
@@ -555,10 +562,15 @@ function bindCourses() {
 
 async function loadCourses() {
   try {
-    const snap = await db.collection("courses")
-      .where("createdBy", "==", state.user.uid)
-      .get();
-    state.courses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const snap = await db.ref("courses/" + state.user.uid).once("value");
+    const courses = [];
+    if (snap.exists()) {
+      snap.forEach(child => {
+        const data = child.val();
+        courses.push({ id: child.key, ...data, holes: data.holes || [] });
+      });
+    }
+    state.courses = courses;
     if (state.route === "courses") render();
   } catch (e) {
     console.error("Failed to load courses:", e);
@@ -567,13 +579,10 @@ async function loadCourses() {
 
 async function selectCourse(courseId) {
   try {
-    const courseDoc = await db.collection("courses").doc(courseId).get();
-    if (!courseDoc.exists) return;
-    const course = { id: courseDoc.id, ...courseDoc.data() };
-
-    const holesSnap = await db.collection("courses").doc(courseId)
-      .collection("holes").orderBy("number").get();
-    course.holes = holesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const snap = await db.ref("courses/" + state.user.uid + "/" + courseId).once("value");
+    if (!snap.exists()) return;
+    const data = snap.val();
+    const course = { id: courseId, ...data, holes: data.holes || [] };
 
     state.currentCourse = course;
 
@@ -591,7 +600,6 @@ async function selectCourse(courseId) {
 async function startNewRound(course) {
   try {
     const roundData = {
-      userId: state.user.uid,
       courseId: course.id,
       courseName: course.name,
       holeCount: course.holeCount || course.holes?.length || 18,
@@ -601,10 +609,10 @@ async function startNewRound(course) {
       totalPoints: 0,
       totalGross: 0,
       handicap: state.profile?.handicap || 0,
-      startedAt: firebase.firestore.FieldValue.serverTimestamp()
+      startedAt: firebase.database.ServerValue.TIMESTAMP
     };
-    const ref = await db.collection("rounds").add(roundData);
-    state.currentRound = { id: ref.id, ...roundData };
+    const ref = await db.ref("rounds/" + state.user.uid).push(roundData);
+    state.currentRound = { id: ref.key, ...roundData };
     state.currentHole = 1;
     state.shots = [];
     navigate("active-hole");
@@ -804,27 +812,15 @@ async function saveCourse() {
   const totalPar = c.holes.reduce((sum, h) => sum + h.par, 0);
 
   try {
-    const courseRef = await db.collection("courses").add({
+    const ref = await db.ref("courses/" + state.user.uid).push({
       name: c.name,
       holeCount: c.holeCount,
       totalPar,
-      createdBy: state.user.uid,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      createdAt: firebase.database.ServerValue.TIMESTAMP,
+      holes: c.holes
     });
 
-    const batch = db.batch();
-    c.holes.forEach(h => {
-      const holeRef = courseRef.collection("holes").doc();
-      batch.set(holeRef, {
-        number: h.number,
-        par: h.par,
-        distance: h.distance || 0,
-        strokeIndex: h.strokeIndex
-      });
-    });
-    await batch.commit();
-
-    state.currentCourse = { id: courseRef.id, ...c, totalPar };
+    state.currentCourse = { id: ref.key, ...c, totalPar };
     navigate("courses");
   } catch (e) {
     console.error("Failed to save course:", e);
@@ -1000,7 +996,7 @@ function bindActiveHole() {
 
 function updateRoundHole() {
   if (state.currentRound?.id) {
-    db.collection("rounds").doc(state.currentRound.id).update({
+    db.ref("rounds/" + state.user.uid + "/" + state.currentRound.id).update({
       currentHole: state.currentHole
     }).catch(console.error);
   }
@@ -1085,19 +1081,16 @@ function closeModal() {
 async function addShot(club, distance) {
   const holeShots = state.shots.filter(s => s.holeNumber === state.currentHole);
   const shotData = {
-    userId: state.user.uid,
-    roundId: state.currentRound.id,
-    courseId: state.currentCourse.id,
     holeNumber: state.currentHole,
     strokeNumber: holeShots.length + 1,
     club,
     distance: distance || 0,
-    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    timestamp: firebase.database.ServerValue.TIMESTAMP
   };
 
   try {
-    const ref = await db.collection("shots").add(shotData);
-    state.shots.push({ id: ref.id, ...shotData });
+    const ref = await db.ref("shots/" + state.currentRound.id).push(shotData);
+    state.shots.push({ id: ref.key, ...shotData });
     updateRoundTotals();
   } catch (e) {
     console.error("Failed to add shot:", e);
@@ -1110,7 +1103,7 @@ async function deleteShot(holeIdx) {
   if (!shot?.id) return;
 
   try {
-    await db.collection("shots").doc(shot.id).delete();
+    await db.ref("shots/" + state.currentRound.id + "/" + shot.id).remove();
     state.shots = state.shots.filter(s => s.id !== shot.id);
     updateRoundTotals();
     render();
@@ -1149,7 +1142,7 @@ function calcTotalGross() {
 async function updateRoundTotals() {
   if (!state.currentRound?.id) return;
   try {
-    await db.collection("rounds").doc(state.currentRound.id).update({
+    await db.ref("rounds/" + state.user.uid + "/" + state.currentRound.id).update({
       totalPoints: calcTotalPoints(),
       totalGross: calcTotalGross()
     });
@@ -1163,11 +1156,11 @@ async function finishRound() {
   try {
     const totalPts = calcTotalPoints();
     const totalGross = calcTotalGross();
-    await db.collection("rounds").doc(state.currentRound.id).update({
+    await db.ref("rounds/" + state.user.uid + "/" + state.currentRound.id).update({
       status: "completed",
       totalPoints: totalPts,
       totalGross: totalGross,
-      completedAt: firebase.firestore.FieldValue.serverTimestamp()
+      completedAt: firebase.database.ServerValue.TIMESTAMP
     });
     state.currentRound.status = "completed";
     state.currentRound.totalPoints = totalPts;
@@ -1300,8 +1293,6 @@ function renderSummary() {
       const hcpStrokes = getHandicapStrokes(holeData.strokeIndex || h, handicap);
       const pts = gross > 0 ? calcStablefordPoints(gross, holeData.par, hcpStrokes) : 0;
       const scoreInfo = gross > 0 ? getScoreLabel(gross, holeData.par) : null;
-      const bgColor = scoreInfo ? `var(--${scoreInfo.cls === "par-score" ? "surface-card" : scoreInfo.cls})` : "var(--surface-card)";
-      const bgOpacity = scoreInfo && scoreInfo.cls !== "par-score" ? "0.15" : "1";
 
       holeGridHtml += `
         <div class="hole-mini" style="background:${scoreInfo && scoreInfo.cls !== "par-score"
@@ -1391,23 +1382,31 @@ auth.onAuthStateChanged(async user => {
   if (user) {
     state.user = user;
     try {
-      const profileDoc = await db.collection("users").doc(user.uid).get();
-      state.profile = profileDoc.exists ? profileDoc.data() : { displayName: user.displayName, handicap: 0 };
+      const profileSnap = await db.ref("users/" + user.uid).once("value");
+      state.profile = profileSnap.exists()
+        ? profileSnap.val()
+        : { displayName: user.displayName, handicap: 0 };
 
-      if (!profileDoc.exists) {
-        await db.collection("users").doc(user.uid).set({
+      if (!profileSnap.exists()) {
+        await db.ref("users/" + user.uid).set({
           displayName: user.displayName || "",
           email: user.email || "",
           handicap: 0,
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          createdAt: firebase.database.ServerValue.TIMESTAMP
         });
       }
 
       await seedCoursesForUser(user.uid);
 
-      const coursesSnap = await db.collection("courses")
-        .where("createdBy", "==", user.uid).get();
-      state.courses = coursesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const coursesSnap = await db.ref("courses/" + user.uid).once("value");
+      const courses = [];
+      if (coursesSnap.exists()) {
+        coursesSnap.forEach(child => {
+          const data = child.val();
+          courses.push({ id: child.key, ...data, holes: data.holes || [] });
+        });
+      }
+      state.courses = courses;
 
       navigate("dashboard");
     } catch (e) {
