@@ -5,12 +5,13 @@
 // ── Firebase Config ─────────────────────────────────────────────────────────
 // Replace with your Firebase project credentials
 const firebaseConfig = {
-  apiKey: "908737680772",
+  apiKey: "AIzaSyDfbuEgkbUfAVMkjTOtdwGS07HfcgI5lR8",
   authDomain: "golftracker-2026.firebaseapp.com",
   projectId: "golftracker-2026",
-  storageBucket: "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  storageBucket: "golftracker-2026.firebasestorage.app",
+  messagingSenderId: "908737680772",
+  appId: "1:908737680772:web:9aab461254cc6d07c039d1",
+  measurementId: "G-L6EQKTJ603"
 };
 
 firebase.initializeApp(firebaseConfig);
