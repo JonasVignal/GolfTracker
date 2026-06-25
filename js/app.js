@@ -427,6 +427,7 @@ async function resumeRound(roundId) {
     state.selectedTee = round.tee || null;
     state.shots = shots;
     state.currentHole = round.currentHole || 1;
+    await loadPreviousRoundShots(round.courseId, roundId);
     navigate("active-hole");
   } catch (e) {
     console.error("Failed to resume round:", e);
@@ -597,6 +598,36 @@ async function selectCourse(courseId) {
   }
 }
 
+async function loadPreviousRoundShots(courseId, currentRoundId) {
+  state.previousShots = [];
+  try {
+    const roundsSnap = await db.ref("rounds/" + state.user.uid).once("value");
+    if (!roundsSnap.exists()) return;
+
+    let prevRound = null;
+    roundsSnap.forEach(child => {
+      const r = child.val();
+      if (r.courseId === courseId && r.status === "completed" && child.key !== currentRoundId) {
+        if (!prevRound || (r.startedAt || 0) > (prevRound.startedAt || 0)) {
+          prevRound = { id: child.key, ...r };
+        }
+      }
+    });
+    if (!prevRound) return;
+
+    const shotsSnap = await db.ref("shots/" + prevRound.id).once("value");
+    if (!shotsSnap.exists()) return;
+
+    const shots = [];
+    shotsSnap.forEach(child => {
+      shots.push({ id: child.key, ...child.val() });
+    });
+    state.previousShots = shots;
+  } catch (e) {
+    console.error("Failed to load previous round:", e);
+  }
+}
+
 async function startNewRound(course) {
   try {
     const roundData = {
@@ -615,6 +646,7 @@ async function startNewRound(course) {
     state.currentRound = { id: ref.key, ...roundData };
     state.currentHole = 1;
     state.shots = [];
+    await loadPreviousRoundShots(course.id, ref.key);
     navigate("active-hole");
   } catch (e) {
     console.error("Failed to start round:", e);
@@ -858,6 +890,29 @@ function renderActiveHole() {
     });
   }
 
+  const prevHoleShots = (state.previousShots || []).filter(s => s.holeNumber === holeNum);
+  prevHoleShots.sort((a, b) => (a.strokeNumber || 0) - (b.strokeNumber || 0));
+  let prevHtml = "";
+  if (prevHoleShots.length > 0) {
+    let prevItems = "";
+    prevHoleShots.forEach((s, i) => {
+      prevItems += `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface-card);border-radius:8px;margin-bottom:4px">
+          <div style="width:24px;height:24px;border-radius:50%;background:rgba(107,142,107,0.2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--text-muted);flex-shrink:0">${i + 1}</div>
+          <div style="font-size:14px;font-weight:500;color:var(--text-secondary)">${escapeHtml(s.club)}</div>
+          ${s.distance ? `<div style="font-size:12px;color:var(--text-muted);margin-left:auto">${s.distance}m</div>` : ""}
+        </div>`;
+    });
+    prevHtml = `
+      <div style="margin-top:20px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span class="material-icons-round text-muted" style="font-size:16px">history</span>
+          <span class="text-muted text-sm font-bold">Last Round — ${prevHoleShots.length} stroke${prevHoleShots.length !== 1 ? "s" : ""}</span>
+        </div>
+        ${prevItems}
+      </div>`;
+  }
+
   const totalPts = calcTotalPoints();
 
   return `
@@ -899,6 +954,7 @@ function renderActiveHole() {
             </button>
           </div>
           ${shotsHtml}
+          ${prevHtml}
         </div>
       </div>
     </div>
