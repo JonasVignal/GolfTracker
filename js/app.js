@@ -22,6 +22,7 @@ const db = firebase.firestore();
 const SEED_COURSES = {
   skyrup: {
     name: "Skyrup GK", location: "Sweden", par: 71, holeCount: 18,
+    imagePattern: "Skyrup_{n}.png",
     pars: [4, 4, 3, 5, 4, 3, 4, 4, 4, 5, 3, 4, 4, 3, 4, 4, 4, 5],
     si: [14, 4, 18, 10, 6, 8, 2, 12, 16, 9, 17, 1, 5, 13, 7, 15, 3, 11],
     gps: [
@@ -46,7 +47,18 @@ async function seedCoursesForUser(uid) {
       .where("createdBy", "==", uid)
       .where("seedKey", "==", key)
       .get();
-    if (!existing.empty) continue;
+
+    if (!existing.empty) {
+      const doc = existing.docs[0];
+      const current = doc.data();
+      const updates = {};
+      if (data.imagePattern && !current.imagePattern) updates.imagePattern = data.imagePattern;
+      if (data.tees && !current.tees) updates.tees = data.tees;
+      if (Object.keys(updates).length > 0) {
+        await db.collection("courses").doc(doc.id).update(updates);
+      }
+      continue;
+    }
 
     const courseRef = await db.collection("courses").add({
       name: data.name,
@@ -54,6 +66,7 @@ async function seedCoursesForUser(uid) {
       holeCount: data.holeCount,
       totalPar: data.par,
       tees: data.tees,
+      imagePattern: data.imagePattern || null,
       seedKey: key,
       createdBy: uid,
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -530,11 +543,14 @@ function renderCourses() {
 function bindCourses() {
   document.getElementById("courses-back").addEventListener("click", () => navigate("dashboard"));
   document.getElementById("add-course").addEventListener("click", () => navigate("create-course"));
-  loadCourses();
 
   document.querySelectorAll("[data-course-id]").forEach(el => {
     el.addEventListener("click", () => selectCourse(el.dataset.courseId));
   });
+
+  if (state.courses.length === 0) {
+    loadCourses();
+  }
 }
 
 async function loadCourses() {
@@ -911,6 +927,48 @@ function renderActiveHole() {
     <div id="modal-container"></div>`;
 }
 
+function getHoleImageUrl(course, holeNum) {
+  const pattern = course.imagePattern;
+  if (!pattern) return null;
+  return pattern.replace("{n}", holeNum);
+}
+
+function showHoleImagePopup() {
+  const course = state.currentCourse;
+  const imgUrl = getHoleImageUrl(course, state.currentHole);
+  if (!imgUrl) return;
+
+  const holeData = course.holes?.find(h => h.number === state.currentHole) || {};
+  const tee = state.selectedTee || state.currentRound?.tee;
+  const dist = (tee && holeData.distances?.[tee]) || holeData.distance || 0;
+
+  const container = document.getElementById("modal-container");
+  container.innerHTML = `
+    <div class="modal-overlay" id="hole-img-overlay" style="display:flex;align-items:center;justify-content:center;z-index:200">
+      <div class="hole-img-popup">
+        <div class="hole-img-popup-header">
+          <h2>Hole ${state.currentHole}</h2>
+          <div class="text-secondary text-sm">Par ${holeData.par || 4}${dist ? " · " + dist + "m" : ""}${holeData.strokeIndex ? " · SI " + holeData.strokeIndex : ""}</div>
+        </div>
+        <img src="${escapeAttr(imgUrl)}" alt="Hole ${state.currentHole}" class="hole-img-popup-img" />
+        <button class="btn btn-primary btn-full" id="hole-img-dismiss" style="margin-top:16px">
+          <span class="material-icons-round">sports_golf</span>
+          Let's Go
+        </button>
+      </div>
+    </div>`;
+
+  document.getElementById("hole-img-overlay").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeHoleImagePopup();
+  });
+  document.getElementById("hole-img-dismiss").addEventListener("click", closeHoleImagePopup);
+}
+
+function closeHoleImagePopup() {
+  const container = document.getElementById("modal-container");
+  if (container) container.innerHTML = "";
+}
+
 function bindActiveHole() {
   document.getElementById("hole-menu")?.addEventListener("click", () => navigate("dashboard"));
   document.getElementById("hole-scorecard")?.addEventListener("click", () => navigate("scorecard"));
@@ -936,6 +994,7 @@ function bindActiveHole() {
     });
   });
 
+  showHoleImagePopup();
   updateLiveDistance();
 }
 
