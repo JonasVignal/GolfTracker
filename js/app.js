@@ -965,8 +965,36 @@ function closeHoleImagePopup() {
   if (container) container.innerHTML = "";
 }
 
+function showRoundMenu() {
+  const container = document.getElementById("modal-container");
+  container.innerHTML = `
+    <div class="modal-overlay" id="modal-overlay"></div>
+    <div class="bottom-sheet">
+      <div class="sheet-handle"></div>
+      <h3 style="margin-bottom:20px">Round Menu</h3>
+      <button class="btn btn-primary btn-full" id="menu-finish-round" style="margin-bottom:12px">
+        <span class="material-icons-round">flag</span>
+        Finish Round
+      </button>
+      <button class="btn btn-danger-outline btn-full" id="menu-quit-round">
+        <span class="material-icons-round">exit_to_app</span>
+        Quit Without Saving
+      </button>
+    </div>`;
+
+  document.getElementById("modal-overlay").addEventListener("click", closeModal);
+  document.getElementById("menu-finish-round").addEventListener("click", () => {
+    closeModal();
+    finishRound();
+  });
+  document.getElementById("menu-quit-round").addEventListener("click", () => {
+    closeModal();
+    navigate("dashboard");
+  });
+}
+
 function bindActiveHole() {
-  document.getElementById("hole-menu")?.addEventListener("click", () => navigate("dashboard"));
+  document.getElementById("hole-menu")?.addEventListener("click", showRoundMenu);
   document.getElementById("hole-scorecard")?.addEventListener("click", () => navigate("scorecard"));
   document.getElementById("add-stroke")?.addEventListener("click", showAddStrokeModal);
   document.getElementById("prev-hole")?.addEventListener("click", () => {
