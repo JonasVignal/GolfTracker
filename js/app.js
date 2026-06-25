@@ -42,20 +42,20 @@ const SEED_COURSES = {
 };
 
 async function seedCoursesForUser(uid) {
-  for (const [key, data] of Object.entries(SEED_COURSES)) {
-    const existing = await db.collection("courses")
-      .where("createdBy", "==", uid)
-      .where("seedKey", "==", key)
-      .get();
+  const userCourses = await db.collection("courses")
+    .where("createdBy", "==", uid)
+    .get();
 
-    if (!existing.empty) {
-      const doc = existing.docs[0];
-      const current = doc.data();
+  for (const [key, data] of Object.entries(SEED_COURSES)) {
+    const existingDoc = userCourses.docs.find(d => d.data().seedKey === key);
+
+    if (existingDoc) {
+      const current = existingDoc.data();
       const updates = {};
       if (data.imagePattern && !current.imagePattern) updates.imagePattern = data.imagePattern;
       if (data.tees && !current.tees) updates.tees = data.tees;
       if (Object.keys(updates).length > 0) {
-        await db.collection("courses").doc(doc.id).update(updates);
+        await db.collection("courses").doc(existingDoc.id).update(updates);
       }
       continue;
     }
