@@ -35,8 +35,8 @@ const SEED_COURSES = {
     ],
     tees: {
       yellow: { label: "Yellow 59", length: 5696, rating: 70.9, slope: 129, lengths: [310, 345, 125, 465, 335, 135, 330, 380, 300, 465, 175, 375, 365, 140, 320, 315, 360, 460] },
-      white:  { label: "White 53",  length: 5100, rating: 71.6, slope: 129, lengths: [300, 320, 100, 440, 295, 125, 275, 330, 290, 415, 150, 330, 320, 120, 320, 280, 315, 400] },
-      blue:   { label: "Blue 47",   length: 4548, rating: 67.9, slope: 123, lengths: [260, 265, 100, 395, 270, 100, 275, 280, 250, 365, 125, 280, 280, 110, 285, 280, 265, 365] }
+      white: { label: "White 53", length: 5100, rating: 71.6, slope: 129, lengths: [300, 320, 100, 440, 295, 125, 275, 330, 290, 415, 150, 330, 320, 120, 320, 280, 315, 400] },
+      blue: { label: "Blue 47", length: 4548, rating: 67.9, slope: 123, lengths: [260, 265, 100, 395, 270, 100, 275, 280, 250, 365, 125, 280, 280, 110, 285, 280, 265, 365] }
     }
   }
 };
@@ -1100,11 +1100,20 @@ async function updateLiveDistance() {
   }
 }
 
-function showAddStrokeModal() {
+async function showAddStrokeModal() {
   const container = document.getElementById("modal-container");
   const clubsHtml = CLUBS.map(c => `
     <button class="btn btn-outline club-btn" data-club="${c}" style="padding:10px 14px;font-size:14px">${c}</button>
   `).join("");
+
+  let gpsDist = 0;
+  const holeData = state.currentCourse.holes?.find(h => h.number === state.currentHole);
+  if (holeData?.pinLat && holeData?.pinLng) {
+    try {
+      const pos = await getCurrentPosition();
+      gpsDist = Math.round(calcDistance(pos.lat, pos.lng, holeData.pinLat, holeData.pinLng));
+    } catch (e) { }
+  }
 
   container.innerHTML = `
     <div class="modal-overlay" id="modal-overlay"></div>
@@ -1118,8 +1127,11 @@ function showAddStrokeModal() {
       </div>
 
       <div style="margin-bottom:20px">
-        <label>Distance (meters, optional)</label>
-        <input class="input" id="stroke-distance" type="number" min="0" max="400" placeholder="e.g. 150" />
+        <label>Distance to pin (meters)</label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input class="input" id="stroke-distance" type="number" min="0" max="700" value="${gpsDist || ""}" placeholder="e.g. 150" style="flex:1" />
+          ${gpsDist ? `<span class="badge badge-accent"><span class="material-icons-round" style="font-size:14px">gps_fixed</span> GPS</span>` : ""}
+        </div>
       </div>
 
       <input type="hidden" id="selected-club" value="" />
@@ -1491,6 +1503,8 @@ auth.onAuthStateChanged(async user => {
         });
       }
       state.courses = courses;
+
+
 
       navigate("dashboard");
     } catch (e) {
