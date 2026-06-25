@@ -18,6 +18,67 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 
+// ── Seed Courses ────────────────────────────────────────────────────────────
+const SEED_COURSES = {
+  skyrup: {
+    name: "Skyrup GK", location: "Sweden", par: 71, holeCount: 18,
+    pars: [4, 4, 3, 5, 4, 3, 4, 4, 4, 5, 3, 4, 4, 3, 4, 4, 4, 5],
+    si: [14, 4, 18, 10, 6, 8, 2, 12, 16, 9, 17, 1, 5, 13, 7, 15, 3, 11],
+    gps: [
+      [56.133204, 13.667056], [56.134144, 13.662307], [56.134822, 13.664074],
+      [56.136776, 13.668925], [56.135118, 13.664852], [56.133700, 13.665925],
+      [56.132830, 13.671148], [56.134629, 13.665951], [56.133956, 13.671889],
+      [56.134685, 13.674373], [56.135793, 13.677261], [56.132077, 13.674420],
+      [56.134984, 13.676551], [56.133392, 13.678437], [56.130368, 13.680122],
+      [56.128617, 13.677510], [56.131846, 13.677534], [56.130922, 13.671426]
+    ],
+    tees: {
+      yellow: { label: "Yellow 59", length: 5696, rating: 70.9, slope: 129, lengths: [310, 345, 125, 465, 335, 135, 330, 380, 300, 465, 175, 375, 365, 140, 320, 315, 360, 460] },
+      white:  { label: "White 53",  length: 5100, rating: 71.6, slope: 129, lengths: [300, 320, 100, 440, 295, 125, 275, 330, 290, 415, 150, 330, 320, 120, 320, 280, 315, 400] },
+      blue:   { label: "Blue 47",   length: 4548, rating: 67.9, slope: 123, lengths: [260, 265, 100, 395, 270, 100, 275, 280, 250, 365, 125, 280, 280, 110, 285, 280, 265, 365] }
+    }
+  }
+};
+
+async function seedCoursesForUser(uid) {
+  for (const [key, data] of Object.entries(SEED_COURSES)) {
+    const existing = await db.collection("courses")
+      .where("createdBy", "==", uid)
+      .where("seedKey", "==", key)
+      .get();
+    if (!existing.empty) continue;
+
+    const courseRef = await db.collection("courses").add({
+      name: data.name,
+      location: data.location,
+      holeCount: data.holeCount,
+      totalPar: data.par,
+      tees: data.tees,
+      seedKey: key,
+      createdBy: uid,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    const batch = db.batch();
+    for (let i = 0; i < data.holeCount; i++) {
+      const holeRef = courseRef.collection("holes").doc();
+      batch.set(holeRef, {
+        number: i + 1,
+        par: data.pars[i],
+        strokeIndex: data.si[i],
+        pinLat: data.gps[i][0],
+        pinLng: data.gps[i][1],
+        distances: {
+          yellow: data.tees.yellow.lengths[i],
+          white: data.tees.white.lengths[i],
+          blue: data.tees.blue.lengths[i]
+        }
+      });
+    }
+    await batch.commit();
+  }
+}
+
 // ── State ───────────────────────────────────────────────────────────────────
 const state = {
   user: null,
@@ -120,6 +181,10 @@ function render() {
     case "courses":
       app.innerHTML = renderCourses();
       bindCourses();
+      break;
+    case "select-tee":
+      app.innerHTML = renderSelectTee();
+      bindSelectTee();
       break;
     case "create-course":
       app.innerHTML = renderCreateCourse();
@@ -340,6 +405,7 @@ async function resumeRound(roundId) {
 
     state.currentCourse = course;
     state.currentRound = round;
+    state.selectedTee = round.tee || null;
     state.shots = shotsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.currentHole = round.currentHole || 1;
     navigate("active-hole");
@@ -494,7 +560,13 @@ async function selectCourse(courseId) {
     course.holes = holesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
     state.currentCourse = course;
-    await startNewRound(course);
+
+    if (course.tees && Object.keys(course.tees).length > 0) {
+      navigate("select-tee");
+    } else {
+      state.selectedTee = null;
+      await startNewRound(course);
+    }
   } catch (e) {
     console.error("Failed to select course:", e);
   }
@@ -507,6 +579,7 @@ async function startNewRound(course) {
       courseId: course.id,
       courseName: course.name,
       holeCount: course.holeCount || course.holes?.length || 18,
+      tee: state.selectedTee || null,
       status: "active",
       currentHole: 1,
       totalPoints: 0,
@@ -522,6 +595,55 @@ async function startNewRound(course) {
   } catch (e) {
     console.error("Failed to start round:", e);
   }
+}
+
+// ── Render: Select Tee ─────────────────────────────────────────────────────
+function renderSelectTee() {
+  const course = state.currentCourse;
+  const tees = course.tees || {};
+  const teeColors = { yellow: "#FFD600", white: "#FFFFFF", blue: "#42A5F5", red: "#EF5350" };
+
+  let teesHtml = "";
+  for (const [key, tee] of Object.entries(tees)) {
+    const color = teeColors[key] || "var(--accent)";
+    teesHtml += `
+      <div class="card tee-option" data-tee="${key}" style="margin-bottom:12px;cursor:pointer;transition:border-color 0.2s">
+        <div style="display:flex;align-items:center;gap:16px">
+          <div style="width:16px;height:16px;border-radius:50%;background:${color};flex-shrink:0;box-shadow:0 0 8px ${color}40"></div>
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:16px">${escapeHtml(tee.label || key)}</div>
+            <div class="text-muted text-sm">${tee.length}m · Rating ${tee.rating} · Slope ${tee.slope}</div>
+          </div>
+          <span class="material-icons-round text-muted">chevron_right</span>
+        </div>
+      </div>`;
+  }
+
+  return `
+    <nav class="topbar">
+      <button class="topbar-btn" id="tee-back">
+        <span class="material-icons-round">arrow_back</span>
+      </button>
+      <div class="topbar-title">${escapeHtml(course.name)}</div>
+      <div style="width:40px"></div>
+    </nav>
+
+    <div class="page-content scrollable" style="max-width:600px;margin:0 auto">
+      <h2 style="margin-bottom:4px">Select Tee</h2>
+      <p class="text-muted" style="margin-bottom:20px">Choose which tee box you're playing from</p>
+      ${teesHtml}
+    </div>`;
+}
+
+function bindSelectTee() {
+  document.getElementById("tee-back").addEventListener("click", () => navigate("courses"));
+
+  document.querySelectorAll(".tee-option").forEach(el => {
+    el.addEventListener("click", async () => {
+      state.selectedTee = el.dataset.tee;
+      await startNewRound(state.currentCourse);
+    });
+  });
 }
 
 // ── Render: Create Course ───────────────────────────────────────────────────
@@ -698,6 +820,8 @@ function renderActiveHole() {
   const course = state.currentCourse;
   const holeNum = state.currentHole;
   const holeData = course.holes?.find(h => h.number === holeNum) || { par: 4, distance: 0 };
+  const tee = state.selectedTee || state.currentRound?.tee;
+  const teeDistance = (tee && holeData.distances?.[tee]) || holeData.distance || 0;
   const holeShots = state.shots.filter(s => s.holeNumber === holeNum);
   const handicap = state.profile?.handicap || state.currentRound?.handicap || 0;
   const hcpStrokes = getHandicapStrokes(holeData.strokeIndex || holeNum, handicap);
@@ -731,7 +855,7 @@ function renderActiveHole() {
       </button>
       <div class="hole-title-block">
         <div class="hole-title">HOLE ${holeNum}</div>
-        <div class="hole-subtitle">Par ${holeData.par} · ${holeData.distance || "—"}m · SI ${holeData.strokeIndex || holeNum}</div>
+        <div class="hole-subtitle">Par ${holeData.par} · ${teeDistance || "—"}m · SI ${holeData.strokeIndex || holeNum}</div>
       </div>
       <button class="topbar-btn" id="hole-scorecard">
         <span class="material-icons-round">grid_on</span>
@@ -1211,6 +1335,8 @@ auth.onAuthStateChanged(async user => {
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
       }
+
+      await seedCoursesForUser(user.uid);
 
       const coursesSnap = await db.collection("courses")
         .where("createdBy", "==", user.uid).get();
